@@ -39,6 +39,8 @@ typedef bool(*fun3_t)(HANDLE, CONST GROUP_AFFINITY*, PGROUP_AFFINITY);
 }
 #endif
 
+#include <cerrno>
+#include <cstring>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
@@ -49,6 +51,7 @@ typedef bool(*fun3_t)(HANDLE, CONST GROUP_AFFINITY*, PGROUP_AFFINITY);
 #if defined(__linux__) && !defined(__ANDROID__)
 #include <stdlib.h>
 #include <sys/mman.h>
+#include <unistd.h>
 #endif
 
 #if defined(__APPLE__) || defined(__ANDROID__) || defined(__OpenBSD__) || (defined(__GLIBCXX__) && !defined(_GLIBCXX_HAVE_ALIGNED_ALLOC) && !defined(_WIN32))
@@ -363,16 +366,67 @@ void std_aligned_free(void* ptr) {
 
 #if defined(__linux__) && !defined(__ANDROID__)
 
-void* aligned_ttmem_alloc(size_t allocSize, void*& mem) {
+void* aligned_ttmem_alloc(size_t allocSize, void*& mem, size_t pageSize, bool &clean) {
 
-  constexpr size_t alignment = 2 * 1024 * 1024; // assumed 2MB page sizes
-  size_t size = ((allocSize + alignment - 1) / alignment) * alignment; // multiple of alignment
-  if (posix_memalign(&mem, alignment, size))
-     mem = nullptr;
-#if defined(MADV_HUGEPAGE)
-  madvise(mem, allocSize, MADV_HUGEPAGE);
-#endif
-  return mem;
+  if (pageSize == 0)
+  {
+      constexpr size_t alignment = 2 * 1024 * 1024; // assumed 2MB page sizes
+      size_t size = ((allocSize + alignment - 1) / alignment) * alignment; // multiple of alignment
+      if (posix_memalign(&mem, alignment, size))
+         mem = nullptr;
+      madvise(mem, allocSize, MADV_HUGEPAGE);
+      clean = false; // malloc doesn't give zeroed memory
+      return mem;
+  }
+  else
+  {
+
+      // round up by page size
+      const size_t memSize = (allocSize + pageSize - 1) & ~(pageSize - 1);
+
+      const long systemPageSize = sysconf(_SC_PAGESIZE);
+      unsigned int hugePageBits = 0;
+
+      if (pageSize != static_cast<unsigned long>(systemPageSize))
+      {
+          const unsigned int slog2 = __builtin_ctz(pageSize);
+          hugePageBits = MAP_HUGETLB | (slog2 << MAP_HUGE_SHIFT);
+      }
+
+      // this is page-aligned, which is always also cache-line aligned
+      mem = mmap(NULL, memSize,
+                  PROT_READ | PROT_WRITE,
+                  MAP_PRIVATE | MAP_ANONYMOUS | hugePageBits,
+                  -1, 0);
+
+      if (mem == MAP_FAILED)
+      {
+          mem = nullptr;
+      }
+      clean = true; // mmap gives zeroed memory
+      return mem;
+  }
+}
+
+void aligned_ttmem_free(void* mem, size_t allocSize, size_t pageSize) {
+  if (pageSize == 0)
+  {
+      free(mem);
+  }
+  else
+  {
+      // round up by page size
+      const size_t memSize = (allocSize + pageSize - 1) & ~(pageSize - 1);
+
+      const int ret = munmap(mem, memSize);
+      if (ret)
+      {
+          // munmap() can plausibly fail with huge pages, in case everything was not
+          // aligned properly
+          std::cerr << "Error in unmapping the transposition table: " << ret << "(" << strerror(errno) << ")" << std::endl;
+          exit(EXIT_FAILURE);
+      }
+  }
 }
 
 #elif defined(_WIN64)
@@ -449,13 +503,18 @@ void* aligned_ttmem_alloc(size_t allocSize, void*& mem) {
 
 #else
 
-void* aligned_ttmem_alloc(size_t allocSize, void*& mem) {
+void* aligned_ttmem_alloc(size_t allocSize, void** mem, size_t, bool &clean) {
 
   constexpr size_t alignment = 64; // assumed cache line size
   size_t size = allocSize + alignment - 1; // allocate some extra space
   mem = malloc(size);
   void* ret = reinterpret_cast<void*>((uintptr_t(mem) + alignment - 1) & ~uintptr_t(alignment - 1));
+  clean = false; // malloc doesn't give zeroed memory
   return ret;
+}
+
+void aligned_ttmem_free(void *mem, size_t, size_t) {
+  free(mem);
 }
 
 #endif

@@ -62,36 +62,71 @@ void TranspositionTable::resizeIfChanged() {
 
   const size_t optMemMb = Options["Hash"];
   const size_t optNumThreads = Options["Threads"];
+  const size_t optHashPageSize = Options["Hash Page Size"];
 
-  if (optMemMb != memMb || optNumThreads != numThreads)
+  if (optMemMb != memMb || optNumThreads != numThreads || optHashPageSize != memPageSize)
   {
+      bool clean = false;
+
       Threads.main()->wait_for_search_finished();
-      aligned_ttmem_free(mem);
+      freeMem();
 
       memMb = optMemMb;
       numThreads = optNumThreads;
+      memPageSize = optHashPageSize;
 
       clusterCount = memMb * 1024 * 1024 / sizeof(Cluster);
-      table = static_cast<Cluster*>(aligned_ttmem_alloc(clusterCount * sizeof(Cluster), mem));
-      if (!mem)
+
+      // check that pageSize is power of 2
+      if (memPageSize & (memPageSize - 1))
       {
-          std::cerr << "Failed to allocate " << memMb
-                    << "MB for transposition table." << std::endl;
+          std::cerr << "Hash page size must be power of 2" << std::endl;
           exit(EXIT_FAILURE);
       }
 
-      markDirty(); // resized hash always needs clearing
+      table = static_cast<Cluster*>(aligned_ttmem_alloc(clusterCount * sizeof(Cluster), mem, memPageSize, clean));
+      if (!mem)
+      {
+          std::cerr << "Failed to allocate " << memMb
+                    << "MB for transposition table";
+
+          if (memPageSize)
+              std::cerr << " with hash page size " << memPageSize;
+
+          std::cerr << "." << std::endl;
+          exit(EXIT_FAILURE);
+      }
+
+      // after malloc, the state is dirty. But after paged alloc, all we need is
+      // to make the pages resident
+      state = (clean ? State::ClearNonResident : State::Dirty);
       clear();
   }
+}
+
+void TranspositionTable::freeMem() {
+    if (mem)
+    {
+        aligned_ttmem_free(mem, clusterCount * sizeof(Cluster), memPageSize);
+        mem = nullptr;
+    }
 }
 
 
 /// TranspositionTable::clear() initializes the entire transposition table to zero,
 //  in a multi-threaded way.
 
+uint64_t roundUpPages(uint64_t value, uint64_t pageSize)
+{
+    if (pageSize == 0)
+        return value;
+    else
+        return (value + pageSize - 1) &~ (pageSize - 1);
+}
+
 void TranspositionTable::clear() {
 
-  if (!dirty)
+  if (state == State::Clear)
       return; // don't clear, hash already clean
 
   std::vector<std::thread> threads;
@@ -102,23 +137,37 @@ void TranspositionTable::clear() {
 
   for (size_t idx = 0; idx < numClearThreads; ++idx)
   {
-      const uint64_t startOffset = (hashSize * idx / numClearThreads);
-      const uint64_t endOffset =   (hashSize * (idx + 1) / numClearThreads);
+      const uint64_t startOffset = roundUpPages(hashSize * idx / numClearThreads, memPageSize);
+      const uint64_t endOffset =   roundUpPages(hashSize * (idx + 1) / numClearThreads, memPageSize);
 
-      threads.emplace_back([this, idx, optNumThreads, numClearThreads, startOffset, endOffset]() {
+      if (startOffset < endOffset)
+      {
+          threads.emplace_back([this, idx, optNumThreads, numClearThreads, startOffset, endOffset]() {
 
-          // Thread binding gives faster search on systems with a first-touch policy
-          if (optNumThreads > 8)
-              WinProcGroup::bindThisThread(idx *  optNumThreads / numClearThreads);
+              // Thread binding gives faster search on systems with a first-touch policy
+              if (optNumThreads > 8)
+                  WinProcGroup::bindThisThread(idx * optNumThreads / numClearThreads);
 
-          std::memset(reinterpret_cast<uint8_t *>(table) + startOffset, 0, endOffset - startOffset);
-      });
+              if (state == State::Dirty)
+              {
+                  std::memset(reinterpret_cast<uint8_t *>(table) + startOffset, 0, endOffset - startOffset);
+              }
+              else
+              {
+                  // ClearNonResident = we need to just touch every page
+                  for (uint64_t i = startOffset; i < endOffset; i += memPageSize)
+                  {
+                      reinterpret_cast<uint8_t *>(table)[i] = 0;
+                  }
+              }
+          });
+      }
   }
 
   for (std::thread& th : threads)
       th.join();
 
-  dirty = false;
+  state = State::Clear;
 }
 
 

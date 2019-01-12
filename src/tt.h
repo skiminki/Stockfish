@@ -73,32 +73,44 @@ class TranspositionTable {
   static_assert(sizeof(Cluster) == 32, "Unexpected Cluster size");
 
 public:
- ~TranspositionTable() { aligned_ttmem_free(mem); }
+ ~TranspositionTable() { freeMem(); }
   void new_search() { generation8 += 8; } // Lower 3 bits are used by PV flag and Bound
   TTEntry* probe(const Key key, bool& found) const;
   int hashfull() const;
 
   void resizeIfChanged(); // trigger resize if options changed
   void clear();           // clear if hash is dirty
-  void markDirty() { dirty = true; } // mark the hash dirty
+  void markDirty() { state = State::Dirty; } // mark the hash dirty
 
   TTEntry* first_entry(const Key key) const {
     return &table[mul_hi64(key, clusterCount)].entry[0];
   }
 
+  enum class State {
+      Clear,
+      ClearNonResident,
+      Dirty,
+  };
+
 private:
+
   friend struct TTEntry;
 
   size_t clusterCount;
   Cluster* table;
   void* mem = nullptr;
-  bool dirty = false;
+  State state = State::Clear;
+  size_t memSize = 0; // in bytes
+  size_t memPageSize = 0; // in bytes
 
   // Current TT config values -- used to trigger resize in resizeIfChanged()
   size_t memMb = 0;
   size_t numThreads = 0;
 
   uint8_t generation8; // Size must be not bigger than TTEntry::genBound8
+
+  void allocMem(size_t mbSize); // sets clusterCount, mem, memSize, table
+  void freeMem();
 };
 
 extern TranspositionTable TT;
