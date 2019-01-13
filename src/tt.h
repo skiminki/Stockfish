@@ -85,8 +85,10 @@ public:
   void new_search() { generation8 += GENERATION_DELTA; } // Lower bits are used for other things
   TTEntry* probe(const Key key, bool& found) const;
   int hashfull() const;
-  void resize(size_t mbSize);
-  void clear();
+
+  void resizeIfChanged(); // trigger resize if options changed
+  void clear();           // clear if hash is dirty
+  void markDirty() { dirty = true; } // mark the hash dirty
 
   TTEntry* first_entry(const Key key) const {
     return &table[mul_hi64(key, clusterCount)].entry[0];
@@ -97,6 +99,12 @@ private:
 
   size_t clusterCount;
   Cluster* table;
+  bool dirty = false;
+
+  // Current TT config values -- used to trigger resize in resizeIfChanged()
+  size_t memMb = 0;
+  size_t numThreads = 0;
+
   uint8_t generation8; // Size must be not bigger than TTEntry::genBound8
 };
 

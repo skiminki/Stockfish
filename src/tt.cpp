@@ -60,23 +60,31 @@ void TTEntry::save(Key k, Value v, bool pv, Bound b, Depth d, Move m, Value ev) 
 /// measured in megabytes. Transposition table consists of a power of 2 number
 /// of clusters and each cluster consists of ClusterSize number of TTEntry.
 
-void TranspositionTable::resize(size_t mbSize) {
+void TranspositionTable::resizeIfChanged() {
 
-  Threads.main()->wait_for_search_finished();
+  const size_t optMemMb = Options["Hash"];
+  const size_t optNumThreads = Options["Threads"];
 
-  aligned_large_pages_free(table);
-
-  clusterCount = mbSize * 1024 * 1024 / sizeof(Cluster);
-
-  table = static_cast<Cluster*>(aligned_large_pages_alloc(clusterCount * sizeof(Cluster)));
-  if (!table)
+  if (optMemMb != memMb || optNumThreads != numThreads)
   {
-      std::cerr << "Failed to allocate " << mbSize
-                << "MB for transposition table." << std::endl;
-      exit(EXIT_FAILURE);
-  }
+      Threads.main()->wait_for_search_finished();
+      aligned_large_pages_free(table);
 
-  clear();
+      memMb = optMemMb;
+      numThreads = optNumThreads;
+
+      clusterCount = memMb * 1024 * 1024 / sizeof(Cluster);
+      table = static_cast<Cluster*>(aligned_large_pages_alloc(clusterCount * sizeof(Cluster)));
+      if (!table)
+      {
+          std::cerr << "Failed to allocate " << memMb
+                    << "MB for transposition table." << std::endl;
+          exit(EXIT_FAILURE);
+      }
+
+      markDirty(); // resized hash always needs clearing
+      clear();
+  }
 }
 
 
@@ -84,6 +92,9 @@ void TranspositionTable::resize(size_t mbSize) {
 //  in a multi-threaded way.
 
 void TranspositionTable::clear() {
+
+  if (!dirty)
+      return; // don't clear, hash already clean
 
   std::vector<std::thread> threads;
 
@@ -107,6 +118,8 @@ void TranspositionTable::clear() {
 
   for (std::thread& th : threads)
       th.join();
+
+  dirty = false;
 }
 
 
