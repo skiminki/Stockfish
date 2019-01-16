@@ -1,10 +1,8 @@
 ## Overview
 
-[![Build Status](https://travis-ci.org/official-stockfish/Stockfish.svg?branch=master)](https://travis-ci.org/official-stockfish/Stockfish)
-[![Build Status](https://ci.appveyor.com/api/projects/status/github/official-stockfish/Stockfish?branch=master&svg=true)](https://ci.appveyor.com/project/mcostalba/stockfish/branch/master)
 
-[Stockfish](https://stockfishchess.org) is a free, powerful UCI chess engine
-derived from Glaurung 2.1. Stockfish is not a complete chess program and requires a
+Stockfish for Analysis is a free, powerful UCI chess engine forked off
+from [Stockfish](https://stockfishchess.org). Stockfish is not a complete chess program and requires a
 UCI-compatible graphical user interface (GUI) (e.g. XBoard with PolyGlot, Scid,
 Cute Chess, eboard, Arena, Sigma Chess, Shredder, Chess Partner or Fritz) in order
 to be used comfortably. Read the documentation for your GUI of choice for information
@@ -15,6 +13,23 @@ evaluation based on handcrafted terms, and the NNUE evaluation based on efficien
 updateable neural networks. The classical evaluation runs efficiently on almost all
 CPU architectures, while the NNUE evaluation benefits from the vector
 intrinsics available on most CPUs (sse2, avx2, neon, or similar).
+
+Stockfish for Analysis improves the usability of the engine,
+specifically for people analyzing games and openings with
+Stockfish. The improvements improvements include:
+
+  * Faster launch, especially for larger hash sizes. This is by
+    omitting redundant hash clears. (all operating systems)
+
+  * Ability to choose a specific number of threads for hash clearing
+    (faster launch, all operating systems)
+
+  * Ability to choose the page size for hash (Linux only; faster
+    launch; nps improvements on huge hash sizes)
+
+My launch speed improves from 1.4s to 0.5s with 16 GB hash, which is
+quite noticeable for me when using my chess GUI. Your mileage will
+vary.
 
 
 ## Files
@@ -52,6 +67,19 @@ Currently, Stockfish has the following UCI options:
 
   * #### Hash
     The size of the hash table in MB. It is recommended to set Hash after setting Threads.
+
+  * #### Hash Clear Threads (Stockfish for Analysis)
+    Number of threads used for hash clear. If using a Windows NUMA
+    system, use at least 2x physical CPUs here. Find the optimal by
+    `time stockfish bench <hash> <threads> 1`.
+
+  * #### Hash Page Size (Stockfish for Analysis)
+    Page size in bytes for the hash table, or 0 for defaults. Before
+    use, see the discussion on hash table page size in a section
+    below. This option has effect only on Linux.
+
+  * #### Clear Hash
+    Clear the hash table.
 
   * #### Ponder
     Let Stockfish ponder its next move while the opponent is thinking.
@@ -218,6 +246,67 @@ afterwards. Due to memory fragmentation, it may not always be
 possible to allocate large pages even when enabled. A reboot
 might alleviate this problem. To determine whether large pages
 are in use, see the engine log.
+
+## Hash table page size (Linux 64-bit)
+
+Larger page sizes reduce the TLB pressure and make page table walking
+faster on a TLB miss. This may somewhat increase the nodes/s
+performance and improve launch time. The actual improvement (if any)
+is dependent on the system.
+
+### Transparent huge pages (regular users)
+
+For regular users with transparent huge pages enabled, the default
+'Hash Page Size' value should usually yield optimal or very close to
+optimal performance. Stockfish does the hash table memory allocation
+in a friendly manner for the transparent huge pages, and advises the
+kernel to use huge pages if available. Check
+`/sys/kernel/mm/transparent_hugepage/enabled` whether you have them
+enabled.
+
+However, transparent huge pages are best effort only and they will
+fall back to regular system pages if they are not available. This may
+not be ideal for dedicated analysis boxes where deterministic
+performance is desired.
+
+### Specific hash page sizes (expert option)
+
+For expert users, the page size can also be explicitly specified,
+but this requires a bit of configuration and is less flexible. Hence,
+this is probably useful only for dedicated analysis machines.
+
+To use, first check your system default huge page size:
+`grep Hugepagesize /proc/meminfo`. Then reserve the desired number of
+huge pages with, e.g., `sudo sysctl vm.nr_hugepages=N` where N is the
+number of huge pages. Now you should be ready to use the explicit hash
+table page size.
+
+For example, if your system has a default huge page size of 2 MB, and
+you wish to use a 8-GB hash table, substitute N with 4096 in the above
+command. Note that the system memory reserved for huge pages is not
+available for regular applications that are not explicitly requesting
+huge pages.
+
+You can also use other page sizes if supported by your system. See
+`/sys/kernel/mm/hugepages/` for all available page sizes, and write to
+`nr_hugepages` in the appropriate subdirectory to reserve the memory
+for the specific page size. Very large page sizes (e.g., 1 GB)
+probably make sense only for high core count machines with very large
+hash sizes.
+
+To make things deterministic, Stockfish will fail if the hash table
+memory cannot be allocated with the explicitly specified page size.
+
+To disable huge pages completely, specify the system page size, which
+is most likely 4096. This option is probably useful only for measuring
+the performance benefit of huge pages.
+
+When using the explicit page size, use hash size that is multiple of
+the page size to avoid overallocation.
+
+Typical page sizes on x86 are: 4096 (4 kB), 2097152 (2 MB), and
+1073741824 (1 GB).
+
 
 ## Compiling Stockfish yourself from the sources
 
