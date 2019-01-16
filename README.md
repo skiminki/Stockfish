@@ -1,10 +1,8 @@
 ## Overview
 
-[![Build Status](https://github.com/official-stockfish/Stockfish/actions/workflows/stockfish.yml/badge.svg)](https://github.com/official-stockfish/Stockfish/actions)
-[![Build Status](https://ci.appveyor.com/api/projects/status/github/official-stockfish/Stockfish?branch=master&svg=true)](https://ci.appveyor.com/project/mcostalba/stockfish/branch/master)
 
-[Stockfish](https://stockfishchess.org) is a free, powerful UCI chess engine
-derived from Glaurung 2.1. Stockfish is not a complete chess program and requires a
+Stockfish for Analysis is a free, powerful UCI chess engine forked off
+from [Stockfish](https://stockfishchess.org). Stockfish is not a complete chess program and requires a
 UCI-compatible graphical user interface (GUI) (e.g. XBoard with PolyGlot, Scid,
 Cute Chess, eboard, Arena, Sigma Chess, Shredder, Chess Partner or Fritz) in order
 to be used comfortably. Read the documentation for your GUI of choice for information
@@ -15,6 +13,23 @@ evaluation based on handcrafted terms, and the NNUE evaluation based on efficien
 updatable neural networks. The classical evaluation runs efficiently on almost all
 CPU architectures, while the NNUE evaluation benefits from the vector
 intrinsics available on most CPUs (sse2, avx2, neon, or similar).
+
+Stockfish for Analysis improves the usability of the engine,
+specifically for people analyzing games and openings with
+Stockfish. The improvements improvements include:
+
+  * Faster launch, especially for larger hash sizes. This is by
+    omitting redundant hash clears. (all operating systems)
+
+  * Ability to choose a specific number of threads for hash clearing
+    (faster launch, all operating systems)
+
+  * Ability to choose the page size for hash (Linux only; faster
+    launch; nps improvements on huge hash sizes)
+
+My launch speed improves from 1.4s to 0.5s with 16 GB hash, which is
+quite noticeable for me when using my chess GUI. Your mileage will
+vary.
 
 
 ## Files
@@ -50,6 +65,16 @@ change them via a chess GUI. This is a list of available UCI options in Stockfis
 
   * #### Hash
     The size of the hash table in MB. It is recommended to set Hash after setting Threads.
+
+  * #### Hash Clear Threads (Stockfish for Analysis)
+    Number of threads used for hash clear. If using a Windows NUMA
+    system, use at least 2x physical CPUs here. Find the optimal by
+    `time stockfish bench <hash> <threads> 1`.
+
+  * #### Hash Page Size (Stockfish for Analysis)
+    Page size in bytes for the hash table, or 0 for defaults. Before
+    use, see the discussion on hash table page size in a section
+    below. This option has effect only on Linux.
 
   * #### Clear Hash
     Clear the hash table.
