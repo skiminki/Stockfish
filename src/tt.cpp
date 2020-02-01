@@ -96,21 +96,22 @@ void TranspositionTable::clear() {
 
   std::vector<std::thread> threads;
 
-  for (size_t idx = 0; idx < Options["Threads"]; ++idx)
+  const unsigned int optNumThreads = Options["Threads"];
+  const unsigned int numClearThreads = Options["Hash Clear Threads"] ? static_cast<unsigned int>(Options["Hash Clear Threads"]) : optNumThreads;
+  const uint64_t hashSize = clusterCount * sizeof(Cluster); // to avoid overflow in (hashSize * idx) on 32-bit archs
+
+  for (size_t idx = 0; idx < numClearThreads; ++idx)
   {
-      threads.emplace_back([this, idx]() {
+      const uint64_t startOffset = (hashSize * idx / numClearThreads);
+      const uint64_t endOffset =   (hashSize * (idx + 1) / numClearThreads);
+
+      threads.emplace_back([this, idx, optNumThreads, numClearThreads, startOffset, endOffset]() {
 
           // Thread binding gives faster search on systems with a first-touch policy
-          if (Options["Threads"] > 8)
-              WinProcGroup::bindThisThread(idx);
+          if (optNumThreads > 8)
+              WinProcGroup::bindThisThread(idx *  optNumThreads / numClearThreads);
 
-          // Each thread will zero its part of the hash table
-          const size_t stride = size_t(clusterCount / Options["Threads"]),
-                       start  = size_t(stride * idx),
-                       len    = idx != Options["Threads"] - 1 ?
-                                stride : clusterCount - start;
-
-          std::memset(&table[start], 0, len * sizeof(Cluster));
+          std::memset(reinterpret_cast<uint8_t *>(table) + startOffset, 0, endOffset - startOffset);
       });
   }
 
