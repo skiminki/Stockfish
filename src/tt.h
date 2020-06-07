@@ -26,7 +26,6 @@
 
 /// TTEntry struct is the 10 bytes transposition table entry, defined as below:
 ///
-/// key        16 bit
 /// move       16 bit
 /// value      16 bit
 /// eval value 16 bit
@@ -37,25 +36,45 @@
 
 struct TTEntry {
 
-  Move  move()  const { return (Move )move16; }
-  Value value() const { return (Value)value16; }
-  Value eval()  const { return (Value)eval16; }
-  Depth depth() const { return (Depth)depth8 + DEPTH_OFFSET; }
-  bool is_pv()  const { return (bool)(genBound8 & 0x4); }
-  Bound bound() const { return (Bound)(genBound8 & 0x3); }
+  Move  move()  const { return move16; }
+  Value value() const { return value16; }
+  Value eval()  const { return eval16; }
+  Depth depth() const { return m_depth; }
+  bool is_pv()  const { return m_is_pv; }
+  Bound bound() const { return m_bound; }
   void save(Key k, Value v, bool pv, Bound b, Depth d, Move m, Value ev);
 
 private:
   friend class TranspositionTable;
 
-  uint16_t key16;
-  uint16_t move16;
-  int16_t  value16;
-  int16_t  eval16;
-  uint8_t  genBound8;
-  uint8_t  depth8;
+  Move     move16;
+  Value    value16;
+  Value    eval16;
+  bool     m_is_pv;
+  Depth    m_depth;
+  Bound    m_bound;
+
+  uint64_t ttePos; // encodes cluster index and entry index
 };
 
+template <unsigned shift, unsigned numBits>
+inline uint64_t extractBitField(uint64_t value)
+{
+    const unsigned leadingBits = 64 - shift - numBits;
+
+    return (value << leadingBits) >> (leadingBits + shift);
+}
+/*
+inline uint64_t extractBitField(uint64_t value, unsigned shift, unsigned numBits)
+{
+    return _bextr_u64(value, shift, numBits);
+}
+*/
+inline uint64_t zeroHighBits(uint64_t value, unsigned startShift)
+{
+    return _bzhi_u64(value, startShift);
+    //    return (value << (64 - startShift)) >> (64 - startShift);
+}
 
 /// A TranspositionTable is an array of Cluster, of size clusterCount. Each
 /// cluster consists of ClusterSize number of TTEntry. Each non-empty TTEntry
@@ -65,42 +84,141 @@ private:
 
 class TranspositionTable {
 
-  static constexpr int ClusterSize = 3;
+  // fields in hash key
+  static constexpr unsigned int EntryKeyBits = 16;
+  static constexpr unsigned int EntryKeyShift = 48;
+  static constexpr uint64_t EntryKeyBitMask = (uint64_t(1) << EntryKeyBits) - 1;
+
+  static constexpr unsigned int FirstTermClusterKeyBits = 32;
+  static constexpr unsigned int FirstTermClusterKeyShift = 0;
+
+  static constexpr unsigned int SecondTermClusterKeyBits = 16;
+  static constexpr unsigned int SecondTermClusterKeyShift = 32;
+
+  static constexpr unsigned int ClusterSize = 3;
   static constexpr int ClustersPerSuperCluster = 256;
 
+  struct TTPackedEntry {
+      uint64_t packedField;
+
+      static constexpr unsigned movePos  = 0;
+      static constexpr unsigned valuePos = 16;
+      static constexpr unsigned evalPos  = 32;
+      static constexpr unsigned depthPos = 48;
+      static constexpr unsigned boundPos = 56;
+      static constexpr unsigned pvPos    = 58;
+      static constexpr unsigned genPos   = 59;
+
+      uint32_t extractGen() const
+      {
+          return extractBitField<genPos, 5U>(packedField);
+      }
+
+      bool extractPv() const
+      {
+          return extractBitField<pvPos, 1U>(packedField);
+      }
+
+      Bound extractBound() const
+      {
+          return static_cast<Bound>(extractBitField<boundPos, 2U>(packedField));
+      }
+
+      Depth extractDepth() const
+      {
+          return static_cast<Depth>(uint8_t(packedField >> depthPos));
+      }
+
+      Move extractMove() const
+      {
+          return static_cast<Move>(uint16_t(packedField >> movePos));
+      }
+
+      Value extractValue() const
+      {
+          return static_cast<Value>(int16_t(packedField >> valuePos));
+      }
+
+      Value extractEval() const
+      {
+          return static_cast<Value>(int16_t(packedField >> evalPos));
+      }
+
+      void store(Value v, bool pv, Bound b, Depth d, Move m, Value ev, uint8_t gen)
+      {
+          packedField = (uint64_t(uint16_t(v)) << valuePos)
+              | (uint64_t(pv)    << pvPos)
+              | (uint64_t(b) << boundPos)
+              | (uint64_t(uint8_t(d)) << depthPos)
+              | (uint64_t(uint16_t(m)) << movePos)
+              | (uint64_t(uint16_t(ev)) << evalPos)
+              | (uint64_t(gen) << genPos);
+
+          assert(v == extractValue());
+          assert(pv == extractPv());
+          assert(b == extractBound());
+          assert(d == extractDepth());
+          assert(m == extractMove());
+          assert(ev == extractEval());
+          assert(gen == extractGen());
+      }
+
+      TTPackedEntry storeGenOnly(uint32_t gen) const
+      {
+          return TTPackedEntry { zeroHighBits(packedField, genPos) | uint64_t(gen) << genPos };
+      }
+  };
+  static_assert(sizeof(TTPackedEntry) == 8, "Sanity check");
+
   struct Cluster {
-    TTEntry entry[ClusterSize];
-    char padding[2]; // Pad to 32 bytes
+    uint64_t entryKeys; // 3 * 21-bit keys = 63 bits
+    TTPackedEntry entry[ClusterSize];
   };
 
   static_assert(sizeof(Cluster) == 32, "Unexpected Cluster size");
+  static_assert(EntryKeyBits * ClusterSize <= sizeof(EntryKeyBitMask) * 8, "Too many entry key bits");
 
 public:
  ~TranspositionTable() { aligned_ttmem_free(mem); }
-  void new_search() { generation8 += 8; } // Lower 3 bits are used by PV flag and Bound
-  TTEntry* probe(const Key key, bool& found) const;
+  void new_search() { generation8 = (generation8 + 1) & 0x1FU; } // 5 bits reserved for generation
+  bool probe(const Key key, TTEntry &tt) const;
   int hashfull() const;
   void resize(size_t mbSize);
   void clear();
 
-  TTEntry* first_entry(const Key key) const {
+  void prefetchCluster(const Key key) const {
+    prefetch(getCluster(key));
+  }
+
+private:
+
+  size_t getClusterIndex(const Key key) const {
 
     // The index is computed from
     // Idx = (K48 * SCC) / 2^40, with K48 the 48 lowest bits swizzled.
 
-    const uint64_t firstTerm =  uint32_t(key) * uint64_t(superClusterCount);
-    const uint64_t secondTerm = (uint16_t(key >> 32) * uint64_t(superClusterCount)) >> 16;
+    const uint64_t firstTerm =  uint32_t(key >> FirstTermClusterKeyShift) * uint64_t(superClusterCount);
+    static_assert(FirstTermClusterKeyBits == 32, "Sanity check");
 
-    return &table[(firstTerm + secondTerm) >> 24].entry[0];
+    const uint64_t secondTerm = (uint16_t(key >> SecondTermClusterKeyShift) * uint64_t(superClusterCount)) >> 16;
+    static_assert(SecondTermClusterKeyBits == 16, "Sanity check");
+
+    return (firstTerm + secondTerm) >> 24;
   }
 
-private:
+  Cluster* getCluster(const Key key) const {
+
+      return &table[getClusterIndex(key)];
+  }
+
+  static Cluster& getClusterForEntry(const TTEntry &entry, unsigned int &entryIndex);
+
   friend struct TTEntry;
 
   size_t superClusterCount;
   Cluster* table;
   void* mem;
-  uint8_t generation8; // Size must be not bigger than TTEntry::genBound8
+  uint32_t generation8; // Size must be not bigger than TTEntry::genBound8
 };
 
 extern TranspositionTable TT;
