@@ -137,8 +137,7 @@ void TTEntry::save(Key k, Value v, bool pv, Bound b, Depth d, Move m, Value ev) 
   // The first entry offset is 8
   const unsigned int keyShift = entryIndex * TranspositionTable::EntryKeyBits;
 
-  uint64_t shiftedKey =
-      ((k >> TranspositionTable::EntryKeyShift) & TranspositionTable::EntryKeyBitMask) << keyShift;
+  uint64_t shiftedKey = extractBitField<TranspositionTable::EntryKeyShift, TranspositionTable::EntryKeyBits>(k) << keyShift;
   const uint64_t shiftedKeyMask = TranspositionTable::EntryKeyBitMask << keyShift;
 
   // Overwrite less valuable entries
@@ -150,12 +149,12 @@ void TTEntry::save(Key k, Value v, bool pv, Bound b, Depth d, Move m, Value ev) 
       assert(d >= DEPTH_OFFSET);
 
       cluster.entryKeys = (cluster.entryKeys & ~shiftedKeyMask) | shiftedKey;
-      tteOut.store(v, pv, b, d - DEPTH_OFFSET, m ? m : move16, ev, TT.generation8);
+      tteOut.store(k, v, pv, b, d - DEPTH_OFFSET, m ? m : move16, ev, TT.generation8);
       cluster.entry[entryIndex] = tteOut;
   }
   else if (m && m != move16) {
       // Preserve any existing move for the same position
-      tteOut.store(value16, m_is_pv, m_bound, m_depth - DEPTH_OFFSET, m, eval16, TT.generation8);
+      tteOut.store(k, value16, m_is_pv, m_bound, m_depth - DEPTH_OFFSET, m, eval16, TT.generation8);
       cluster.entry[entryIndex] = tteOut;
   }
 }
@@ -234,21 +233,40 @@ bool TranspositionTable::probe(const Key key, TTEntry &tteOut) const {
   for (unsigned int i = 0; i < ClusterSize; ++i)
   {
       const uint32_t entryKey = clusterEntryKeys & EntryKeyBitMask;
-      if (!entryKey || entryKey == probeKey)
+      if (entryKey == probeKey)
       {
-          TTPackedEntry tteIn = cluster.entry[i];
+          const TTPackedEntry tteIn = cluster.entry[i];
 
-          cluster.entry[i] = tteIn.storeGenOnly(generation8); // writeback
-
-          tteOut.m_is_pv = tteIn.extractPv();
-          tteOut.m_bound = tteIn.extractBound();
-          tteOut.m_depth = tteIn.extractDepth() + DEPTH_OFFSET;
-          tteOut.move16 = tteIn.extractMove();
-          tteOut.value16 = tteIn.extractValue();
-          tteOut.eval16 = tteIn.extractEval();
           tteOut.ttePos = (clusterIndex << 2) | i;
 
-          return static_cast<bool>(entryKey);
+          if (tteIn.isOccupied() &&
+              tteIn.extractExtraHash() == extractBitField<ExtraEntryKeyShift, ExtraEntryKeyBits>(key))
+          {
+              // Hit
+              tteOut.m_is_pv = tteIn.extractPv();
+              tteOut.m_bound = tteIn.extractBound();
+              tteOut.m_depth = tteIn.extractDepth() + DEPTH_OFFSET;
+              tteOut.move16 = tteIn.extractMove();
+              tteOut.value16 = tteIn.extractValue();
+              tteOut.eval16 = tteIn.extractEval();
+
+              return true;
+          }
+          else
+          {
+              // Collision with the same entry key
+              if (tteIn.isOccupied()) printf("!");
+              tteOut.move16 = Move { };
+              tteOut.value16 = Value { };
+              tteOut.eval16 =  Value { };
+              tteOut.m_depth = 0;
+              tteOut.m_bound = Bound { };
+              tteOut.m_is_pv = false;
+
+              return false;
+          }
+
+          return tteIn.isOccupied();
       }
 
       clusterEntryKeys >>= EntryKeyBits;
@@ -282,8 +300,8 @@ bool TranspositionTable::probe(const Key key, TTEntry &tteOut) const {
   tteOut.m_depth = 0;
   tteOut.m_bound = Bound { };
   tteOut.m_is_pv = false;
-
   tteOut.ttePos = (clusterIndex << 2) | replaceIndex;
+
   return false;
 }
 

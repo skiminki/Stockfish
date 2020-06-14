@@ -117,9 +117,12 @@ inline uint64_t extractBitField(uint64_t value)
 class TranspositionTable {
 
   // fields in hash key
-  static constexpr unsigned int EntryKeyBits = 16;
-  static constexpr unsigned int EntryKeyShift = 48;
+  static constexpr unsigned int EntryKeyBits = 21;
+  static constexpr unsigned int EntryKeyShift = 64 - EntryKeyBits;
   static constexpr uint64_t EntryKeyBitMask = (uint64_t(1) << EntryKeyBits) - 1;
+
+  static constexpr unsigned int ExtraEntryKeyBits = 3;
+  static constexpr unsigned int ExtraEntryKeyShift = EntryKeyShift - ExtraEntryKeyBits;
 
   static constexpr unsigned int FirstTermClusterKeyBits = 32;
   static constexpr unsigned int FirstTermClusterKeyShift = 0;
@@ -191,7 +194,7 @@ class TranspositionTable {
           return static_cast<Value>(int16_t(packedField >> evalPos));
       }
 
-      void store(Value v, bool pv, Bound b, Depth d, Move m, Value ev, uint8_t gen)
+      void store(Key k, Value v, bool pv, Bound b, Depth d, Move m, Value ev, uint8_t gen)
       {
           packedField =
                 (uint64_t(uint16_t(v)) << valuePos)
@@ -199,7 +202,7 @@ class TranspositionTable {
               | (uint64_t(b) << boundPos)
               | (uint64_t(uint8_t(d)) << depthPos)
               | (uint64_t(encodeMove(m)) << movePos)
-              | (uint64_t(7) << extraHashPos)
+              | (extractBitField<ExtraEntryKeyShift, ExtraEntryKeyBits>(k) << extraHashPos)
               | (uint64_t(uint16_t(ev)) << evalPos)
               | (uint64_t(gen) << genPos);
 
