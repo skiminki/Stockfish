@@ -30,10 +30,92 @@
 
 TranspositionTable TT; // Our global transposition table
 
-namespace {
 
+Move TranspositionTable::decodeMove(uint32_t encodedMove)
+{
+    encodedMove -= static_cast<bool>(encodedMove);
 
+    if (encodedMove & 0x1000U)
+    {
+        uint32_t ret;
+        uint32_t promotionBits;
+
+        encodedMove &= 0xFFFU;
+
+        // special move type, need to figure out which one by from source rank
+        switch ((encodedMove & 07000U) >> 9)
+        {
+            case RANK_1: // 0, 7
+            case RANK_8:
+                ret = encodedMove | CASTLING;
+                break;
+
+            case RANK_2: // black promotion
+                promotionBits = PROMOTION | 00000U | (encodedMove & 00070) << 9;
+                ret = (encodedMove & 07707U) | promotionBits;
+                break;
+
+            case RANK_7: // write promotion
+                promotionBits = PROMOTION | 00070U | (encodedMove & 00070) << 9;
+                ret = (encodedMove & 07707U) | promotionBits;
+                break;
+
+                // rank 4/5
+            default:
+                ret = ENPASSANT | encodedMove;
+                break;
+        }
+
+        return Move(ret);
+    }
+    else
+    {
+        return Move(encodedMove);
+    }
 }
+
+uint32_t TranspositionTable::encodeMove(Move m)
+{
+    // ensure that no one uses move H8->H8 for any special purpose
+#if !defined(NDEBUG)
+    if ((m & 0xFFFU) == 0xFFFU)
+        fprintf(stderr, "Move: 0x%04x From=%c%u To=%c%u\n",
+                m,  file_of(from_sq(m))+'A', 1 + rank_of(from_sq(m)), 'A'+file_of(to_sq(m)), 1+rank_of(to_sq(m)));
+    assert((m & 0xFFFU) != 0xFFFU);
+#endif
+
+    uint32_t encodedMove;
+
+    if (type_of(m) == PROMOTION)
+    {
+        uint32_t promotionBits = (m >> 12) & 3;
+        encodedMove = m & 07707U; // remove destination rank and move type bits
+        encodedMove |= promotionBits << 3; // add promotion piece to destination rank
+        encodedMove |= 0x1000U; // set the special bit
+    }
+    else
+    {
+        bool special = (m >> 12); // we want also the promotion bits
+        encodedMove = m & 07777U;
+        encodedMove |= uint32_t(special) << 12;
+    }
+
+    encodedMove++;
+
+#if !defined(NDEBUG)
+    if (decodeMove(encodedMove) != m)
+    {
+        fprintf(stderr, "Move: 0x%04x  Encoded: 0x%04x  Decoded: 0x%04x From=%c%u To=%c%u\n",
+                m, encodedMove, decodeMove(encodedMove), file_of(from_sq(m))+'A', 1 + rank_of(from_sq(m)), 'A'+file_of(to_sq(m)), 1+rank_of(to_sq(m)));
+        assert(decodeMove(encodedMove) == m);
+    }
+#endif
+    // range check
+    assert(encodedMove > 0U);
+    assert(encodedMove < (1U << 13));
+    return encodedMove;
+}
+
 
 TranspositionTable::Cluster& TranspositionTable::getClusterForEntry(
     const TTEntry &entry, unsigned int &entryIndex) {
@@ -214,7 +296,10 @@ int TranspositionTable::hashfull() const {
   int cnt = 0;
   for (size_t i = 0; i < 1000; ++i)
       for (unsigned int j = 0; j < ClusterSize; ++j)
-          cnt += (table[i].entry[j].extractGen() == generation8);
+      {
+          const TTPackedEntry &entry = table[i].entry[j];
+          cnt += entry.isOccupied() && (entry.extractGen() == generation8);
+      }
 
   return cnt / ClusterSize;
 }

@@ -57,23 +57,55 @@ private:
   uint64_t ttePos; // encodes cluster index and entry index
 };
 
-template <unsigned shift, unsigned numBits>
-inline uint64_t extractBitField(uint64_t value)
-{
-    const unsigned leadingBits = 64 - shift - numBits;
-
-    return (value << leadingBits) >> (leadingBits + shift);
-}
-/*
-inline uint64_t extractBitField(uint64_t value, unsigned shift, unsigned numBits)
-{
-    return _bextr_u64(value, shift, numBits);
-}
-*/
 inline uint64_t zeroHighBits(uint64_t value, unsigned startShift)
 {
     return _bzhi_u64(value, startShift);
-    //    return (value << (64 - startShift)) >> (64 - startShift);
+}
+
+template <unsigned shift, unsigned numBits, bool top = (shift + numBits == 64U) >
+struct ExtractBitFieldImpl
+{
+    static constexpr unsigned leadingBits = 64U - shift - numBits;
+    static constexpr inline uint64_t extract(uint64_t value)
+    {
+        return (value << leadingBits) >> (leadingBits + shift);
+    }
+};
+
+template <unsigned numBits>
+struct ExtractBitFieldImpl<0U, numBits, false>
+{
+    static inline uint64_t extract(uint64_t value)
+    {
+        return zeroHighBits(value, numBits);
+    }
+};
+
+template <unsigned numBits>
+struct ExtractBitFieldImpl<0U, numBits, true>
+{
+    static_assert(numBits == 64U, "Sanity check");
+    static inline uint64_t extract(uint64_t value)
+    {
+        return value;
+    }
+};
+
+template <unsigned shift, unsigned numBits>
+struct ExtractBitFieldImpl<shift, numBits, true>
+{
+    static constexpr unsigned leadingBits = 64U - shift - numBits;
+    static_assert(leadingBits == 0, "Sanity check");
+    static constexpr inline uint64_t extract(uint64_t value)
+    {
+        return value >> shift;
+    }
+};
+
+template <unsigned shift, unsigned numBits>
+inline uint64_t extractBitField(uint64_t value)
+{
+    return ExtractBitFieldImpl<shift, numBits>::extract(value);
 }
 
 /// A TranspositionTable is an array of Cluster, of size clusterCount. Each
@@ -98,16 +130,20 @@ class TranspositionTable {
   static constexpr unsigned int ClusterSize = 3;
   static constexpr int ClustersPerSuperCluster = 256;
 
+  static uint32_t encodeMove(Move m);
+  static Move decodeMove(uint32_t m);
+
   struct TTPackedEntry {
       uint64_t packedField;
 
-      static constexpr unsigned movePos  = 0;
-      static constexpr unsigned valuePos = 16;
-      static constexpr unsigned evalPos  = 32;
-      static constexpr unsigned depthPos = 48;
-      static constexpr unsigned boundPos = 56;
-      static constexpr unsigned pvPos    = 58;
-      static constexpr unsigned genPos   = 59;
+      static constexpr unsigned movePos      = 0;
+      static constexpr unsigned extraHashPos = 13;
+      static constexpr unsigned valuePos     = 16;
+      static constexpr unsigned evalPos      = 32;
+      static constexpr unsigned depthPos     = 48;
+      static constexpr unsigned boundPos     = 56;
+      static constexpr unsigned pvPos        = 58;
+      static constexpr unsigned genPos       = 59;
 
       uint32_t extractGen() const
       {
@@ -129,9 +165,20 @@ class TranspositionTable {
           return static_cast<Depth>(uint8_t(packedField >> depthPos));
       }
 
+      bool isOccupied() const
+      {
+          // note: move field is never zero for occupied entries
+          return extractBitField<movePos, 13U>(packedField) != 0U;
+      }
+
       Move extractMove() const
       {
-          return static_cast<Move>(uint16_t(packedField >> movePos));
+          return decodeMove(extractBitField<movePos, 13U>(packedField));
+      }
+
+      uint32_t extractExtraHash() const
+      {
+          return extractBitField<extraHashPos, 3U>(packedField);
       }
 
       Value extractValue() const
@@ -146,11 +193,13 @@ class TranspositionTable {
 
       void store(Value v, bool pv, Bound b, Depth d, Move m, Value ev, uint8_t gen)
       {
-          packedField = (uint64_t(uint16_t(v)) << valuePos)
+          packedField =
+                (uint64_t(uint16_t(v)) << valuePos)
               | (uint64_t(pv)    << pvPos)
               | (uint64_t(b) << boundPos)
               | (uint64_t(uint8_t(d)) << depthPos)
-              | (uint64_t(uint16_t(m)) << movePos)
+              | (uint64_t(encodeMove(m)) << movePos)
+              | (uint64_t(7) << extraHashPos)
               | (uint64_t(uint16_t(ev)) << evalPos)
               | (uint64_t(gen) << genPos);
 
@@ -165,7 +214,8 @@ class TranspositionTable {
 
       TTPackedEntry storeGenOnly(uint32_t gen) const
       {
-          return TTPackedEntry { zeroHighBits(packedField, genPos) | uint64_t(gen) << genPos };
+          static_assert(genPos + 5U == 64, "Sanity check");
+          return TTPackedEntry { extractBitField<0U, genPos>(packedField) | uint64_t(gen) << genPos };
       }
   };
   static_assert(sizeof(TTPackedEntry) == 8, "Sanity check");
