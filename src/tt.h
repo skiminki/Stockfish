@@ -74,7 +74,7 @@ class TranspositionTable {
 
 public:
  ~TranspositionTable() { freeMem(); }
-  void new_search() { generation8 += 8; } // Lower 3 bits are used by PV flag and Bound
+  void new_search() { generation5 = (generation5 + 1) & 0x1FU; } // 5 bits, encoded with bound (2 bits) and pv (1 bit)
   TTEntry* probe(const Key key, bool& found) const;
   int hashfull() const;
 
@@ -107,7 +107,7 @@ private:
   size_t memMb = 0;
   size_t numThreads = 0;
 
-  uint8_t generation8; // Size must be not bigger than TTEntry::genBound8
+  uint8_t generation5; // Must be within 5 bits
 
   void allocMem(size_t mbSize); // sets clusterCount, mem, memSize, table
   void freeMem();
