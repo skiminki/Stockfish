@@ -33,18 +33,7 @@
 /// value      16 bit
 /// eval value 16 bit
 
-struct TTEntry {
-
-  Move  move()  const { return (Move )move16; }
-  Value value() const { return (Value)value16; }
-  Value eval()  const { return (Value)eval16; }
-  Depth depth() const { return (Depth)depth8 + DEPTH_OFFSET; }
-  bool is_pv()  const { return (bool)(genBound8 & 0x4); }
-  Bound bound() const { return (Bound)(genBound8 & 0x3); }
-  void save(Key k, Value v, bool pv, Bound b, Depth d, Move m, Value ev);
-
-private:
-  friend class TranspositionTable;
+struct TTEntryPacked {
 
   uint16_t key16;
   uint8_t  depth8;
@@ -52,6 +41,33 @@ private:
   uint16_t move16;
   int16_t  value16;
   int16_t  eval16;
+};
+
+struct TTEntry {
+
+  void save(Key k, Value v, bool pv, Bound b, Depth d, Move m, Value ev);
+
+  Move  move()  const { return m_move; }
+  Value value() const { return m_value; }
+  Value eval()  const { return m_eval; }
+  Depth depth() const { return m_depth; }
+  bool is_pv()  const { return m_pv; }
+  Bound bound() const { return m_bound; }
+
+private:
+  friend class TranspositionTable;
+
+  void load(TTEntryPacked *e, size_t clusterIndex, uint8_t slotIndex);
+
+  Move m_move;
+  Value m_value;
+  Value m_eval;
+  bool m_pv;
+  Bound m_bound;
+  Depth m_depth;
+
+  size_t m_clusterIndex;
+  uint8_t m_slotIndex;
 };
 
 
@@ -66,7 +82,7 @@ class TranspositionTable {
   static constexpr int ClusterSize = 3;
 
   struct Cluster {
-    TTEntry entry[ClusterSize];
+    TTEntryPacked entry[ClusterSize];
     char padding[2]; // Pad to 32 bytes
   };
 
@@ -75,14 +91,14 @@ class TranspositionTable {
 public:
  ~TranspositionTable() { freeMem(); }
   void new_search() { generation5 = (generation5 + 1) & 0x1FU; } // 5 bits, encoded with bound (2 bits) and pv (1 bit)
-  TTEntry* probe(const Key key, bool& found) const;
+  bool probe(const Key key, TTEntry &entry) const;
   int hashfull() const;
 
   void resizeIfChanged(); // trigger resize if options changed
   void clear();           // clear if hash is dirty
   void markDirty() { state = State::Dirty; } // mark the hash dirty
 
-  TTEntry* first_entry(const Key key) const {
+  TTEntryPacked* first_entry(const Key key) const {
     return &table[mul_hi64(key, clusterCount)].entry[0];
   }
 
