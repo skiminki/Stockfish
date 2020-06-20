@@ -28,86 +28,162 @@
 
 namespace {
 
-constexpr inline uint8_t genFromGenBound8(uint8_t tteGenBound8)
-{
-  return tteGenBound8 >> 3;
-}
-
-constexpr inline uint8_t makeGenBound8(uint8_t gen5, bool pv, Bound bound)
-{
-  return (gen5 << 3) | uint8_t(pv) << 2 | uint8_t(bound);
-}
-
-inline void refreshGen5(uint8_t &tteGenBound8, uint8_t newGen5)
-{
-  tteGenBound8 = (newGen5 << 3) | (tteGenBound8 & 7U);
-}
-
-inline int32_t ageDepthByGen(uint8_t depth8, uint8_t curGen5, uint8_t prevGen5)
+inline int ageTteDepthByGen(uint8_t depth8, uint8_t curGen5, uint8_t prevGen5)
 {
   constexpr uint8_t genDepthPenalty = 8; // every gen means depth reduction by 8
   const uint8_t aging = ((curGen5 - prevGen5) & 0x1FU) * genDepthPenalty;
 
-  return int32_t(depth8) - int32_t(aging);
+  return int(depth8) - int(aging);
+}
+
+inline uint32_t entryKeyFromZobrist(Key k)
+{
+  return k & ((uint32_t(1) << TTCluster::KeyBits) - 1);
 }
 
 }
 
 TranspositionTable TT; // Our global transposition table
 
-void TTEntry::load(TTEntryPacked *e, size_t clusterIndex, uint8_t slotIndex)
+Move TTEntry::decodeTTMove(uint16_t encodedMove)
 {
-  TTEntryPacked packedData = *e;
+  if (encodedMove & 0x1000U)
+  {
+      // special move type, need to figure out which one by from source rank
+      encodedMove &= 0xFFFU; // 0xFFF = 07777
 
-  m_move = (Move )packedData.move16;
-  m_value = (Value)packedData.value16;
-  m_eval = (Value)packedData.eval16;
-  m_depth = (Depth)packedData.depth8 + DEPTH_OFFSET;
-  m_pv = (bool)(packedData.genBound8 & 0x4);
-  m_bound = (Bound)(packedData.genBound8 & 0x3);
+      static constexpr uint16_t sourceRankToOrBits[] = {
+          CASTLING,           // RANK_1
+          PROMOTION,          // RANK_2
+          NORMAL,             // RANK_3
+          ENPASSANT,          // RANK_4
+          ENPASSANT,          // RANK_5
+          NORMAL,             // RANK_6
+          PROMOTION | 00070U, // RANK_7 + force destination rank 8
+          CASTLING,           // RANK_8
+      };
 
-  m_clusterIndex = clusterIndex;
-  m_slotIndex = slotIndex;
+      static constexpr uint16_t sourceRankToAndBits[] = {
+          07777U,             // RANK_1
+          07707U,             // RANK_2 + force destination rank 1
+          07777U,             // RANK_3
+          07777U,             // RANK_4
+          07777U,             // RANK_5
+          07777U,             // RANK_6
+          07777U,             // RANK_7
+          07777U,             // RANK_8
+      };
+
+      static constexpr uint16_t sourceRankToPromofilter[] = {
+          00000U,             // RANK_1
+          00070U,             // RANK_2 promotion
+          00000U,             // RANK_3
+          00000U,             // RANK_4
+          00000U,             // RANK_5
+          00000U,             // RANK_6
+          00070U,             // RANK_7 promotion
+          00000U,             // RANK_8
+      };
+
+      const uint16_t sourceRank  = encodedMove >> 9;
+      const uint16_t orBits      = sourceRankToOrBits[sourceRank];
+      const uint16_t andBits     = sourceRankToAndBits[sourceRank];
+      const uint16_t promoFilter = sourceRankToPromofilter[sourceRank];
+
+      return Move((orBits | (encodedMove & andBits)) + ((encodedMove & promoFilter) << 9));
+  }
+  else
+      return Move(encodedMove);
+}
+
+uint16_t TTEntry::encodeTTMove(Move m)
+{
+  static constexpr uint32_t moveTypeToAndBits[] = {
+      007777U,             // NORMAL
+      007707U,             // PROMOTION, reset destination rank
+      007777U,             // ENPASSANT
+      007777U,             // CASTLING
+  };
+
+  static constexpr uint32_t moveTypeToPromofilter[] = {
+      000000U,             // NORMAL
+      030000U,             // PROMOTION, promotion is in bits 12-13, these need to be shifted to destination rank (bits 3-5)
+      000000U,             // ENPASSANT
+      000000U,             // CASTLING
+  };
+
+  const uint32_t moveTypeBits = m >> 14;
+  const uint32_t orBits       = moveTypeBits ? 010000U : 00000U;   // set special for other than normal move types
+  const uint32_t andBits      = moveTypeToAndBits[moveTypeBits];
+  const uint32_t promofilter  = moveTypeToPromofilter[moveTypeBits];
+
+  uint32_t encodedMove = (m & andBits) + orBits + ((m & promofilter) >> 9);
+
+#if !defined(NDEBUG)
+  if (decodeTTMove(encodedMove) != m)
+  {
+      fprintf(stderr, "Move: 0x%04x  Encoded: 0x%04x  Decoded: 0x%04x From=%c%u To=%c%u\n",
+              m, encodedMove, decodeTTMove(encodedMove), file_of(from_sq(m))+'A', 1 + rank_of(from_sq(m)), 'A'+file_of(to_sq(m)), 1+rank_of(to_sq(m)));
+      assert(decodeTTMove(encodedMove) == m);
+  }
+  // range check
+  assert(encodedMove < (1U << 13));
+#endif
+
+  return encodedMove;
+}
+
+
+void TTEntry::load(TTCluster *cluster, unsigned i)
+{
+  m_cluster = cluster;
+  m_ttePacked = &cluster->entry[i];
+  m_depth = cluster->getTteDepth(i) + DEPTH_OFFSET;
+}
+
+void TTEntry::reset(TTCluster *cluster, unsigned i)
+{
+  m_cluster = cluster;
+  m_ttePacked = &cluster->entry[i];
+  m_depth = DEPTH_NONE;
 }
 
 /// TTEntry::save() populates the TTEntry with a new node's data, possibly
 /// overwriting an old position. Update is not atomic and can be racy.
-void TTEntry::save(Key k, Value v, bool pv, Bound b, Depth d, Move m, Value ev) {
+void TTEntry::save(Key fullKey, Value v, bool pv, Bound b, Depth d, Move m, Value ev) {
 
-  bool doStore = false;
+  TranspositionTable::Cluster& cluster = *m_cluster;
+  const unsigned slot = m_ttePacked - cluster.entry;
 
-  TranspositionTable::Cluster& cluster = TT.table[m_clusterIndex];
-
-  // reload the TT entry, it may have been changed by recursive search since
-  // we loaded it
-  TTEntryPacked packedData = cluster.entry[m_slotIndex];
+  const uint32_t k = entryKeyFromZobrist(fullKey);
+  const uint32_t tteKey = cluster.getTteKey(slot);
 
   // Preserve any existing move for the same position
-  if (m || (uint16_t)k != packedData.key16)
+  if (m || (k != tteKey))
   {
-      packedData.move16 = (uint16_t)m;
-      doStore = true;
+      m_ttePacked->move13pv1bound2 &= ~uint16_t(0x1FFF);
+      m_ttePacked->move13pv1bound2 += encodeTTMove(m);
+
+      assert(move() == m);
   }
 
   // Overwrite less valuable entries (cheapest checks first)
   if (b == BOUND_EXACT
-      || (uint16_t)k != packedData.key16
-      || d - DEPTH_OFFSET > packedData.depth8 - 4)
+      || k != tteKey
+      || d - DEPTH_OFFSET > cluster.getTteDepth(slot) - 4)
   {
       assert(d > DEPTH_OFFSET);
       assert(d < 256 + DEPTH_OFFSET);
 
-      packedData.key16     = (uint16_t)k;
-      packedData.depth8    = (uint8_t)(d - DEPTH_OFFSET);
-      packedData.genBound8 = makeGenBound8(TT.generation5, pv, b);
-      packedData.value16   = (int16_t)v;
-      packedData.eval16    = (int16_t)ev;
-      doStore = true;
-  }
+      cluster.storeTteKeyDepth(slot, k, d - DEPTH_OFFSET);
+      cluster.storeGen(slot, TT.generation5);
 
-  // store only if we changed something to save memory BW
-  if (doStore)
-      cluster.entry[m_slotIndex] = packedData;
+      m_ttePacked->move13pv1bound2 &= 0x1FFF;
+      m_ttePacked->move13pv1bound2 += (uint16_t(pv) << 13) + (uint16_t(b) << 14);
+
+      m_ttePacked->value16   = (int16_t)v;
+      m_ttePacked->eval16    = (int16_t)ev;
+  }
 }
 
 
@@ -234,34 +310,39 @@ void TranspositionTable::clear() {
 /// to be replaced later. The replace value of an entry is calculated as its depth
 /// minus 8 times its relative age. TTEntry t1 is considered more valuable than
 /// TTEntry t2 if its replace value is greater than that of t2.
-bool TranspositionTable::probe(const Key key, TTEntry &entry) const {
+bool TranspositionTable::probe(const Key fullKey, TTEntry &entry) const {
 
-  const size_t clusterIndex = mul_hi64(key, clusterCount);
-  TTEntryPacked* const tte = &TT.table[clusterIndex].entry[0];
-  const uint16_t key16 = (uint16_t)key;  // Use the low 16 bits as key inside the cluster
+  const size_t clusterIndex = mul_hi64(fullKey, clusterCount);
+  Cluster& cluster = TT.table[clusterIndex];
+  const uint32_t key = entryKeyFromZobrist(fullKey);
 
-  for (int i = 0; i < ClusterSize; ++i)
-      if (tte[i].key16 == key16 || !tte[i].depth8)
+  for (unsigned int i = 0; i < ClusterSize; ++i)
+  {
+      if (key == cluster.getTteKey(i) || cluster.getTteDepth(i) == 0)
       {
-          refreshGen5(tte[i].genBound8, generation5); // Refresh gen
+          cluster.storeGen(i, generation5); // Refresh gen
 
-          entry.load(&tte[i], clusterIndex, i);
-          return (bool)tte[i].depth8;
+          entry.load(&cluster, i);
+          return cluster.getTteDepth(i);
       }
+  }
 
   // Find an entry to be replaced according to the replacement strategy
-  TTEntryPacked* replace = tte;
-  uint8_t slotIndex = 0;
+  unsigned int replaceIndex = 0;
+  int replaceTteDepth =
+      ageTteDepthByGen(cluster.getTteDepth(0), generation5, cluster.getGen(0));
 
-  for (int i = 1; i < ClusterSize; ++i)
-      if (ageDepthByGen(replace->depth8, generation5, genFromGenBound8(replace->genBound8)) >
-          ageDepthByGen(tte[i].depth8, generation5, genFromGenBound8(tte[i].genBound8)))
+  for (unsigned int i = 1; i < ClusterSize; ++i)
+  {
+      const int tteDepth = ageTteDepthByGen(cluster.getTteDepth(i), generation5, cluster.getGen(i));
+      if (replaceTteDepth > tteDepth)
       {
-          replace = &tte[i];
-          slotIndex = i;
+          replaceIndex = i;
+          replaceTteDepth = tteDepth;
       }
+  }
 
-  entry.load(replace, clusterIndex, slotIndex);
+  entry.reset(&cluster, replaceIndex);
   return false;
 }
 
@@ -273,8 +354,8 @@ int TranspositionTable::hashfull() const {
 
   int cnt = 0;
   for (int i = 0; i < 1000; ++i)
-      for (int j = 0; j < ClusterSize; ++j)
-          cnt += table[i].entry[j].depth8 && genFromGenBound8(table[i].entry[j].genBound8) == generation5;
+      for (unsigned int j = 0; j < ClusterSize; ++j)
+          cnt += table[i].getTteDepth(j) && table[i].getGen(j) == generation5;
 
   return cnt / ClusterSize;
 }

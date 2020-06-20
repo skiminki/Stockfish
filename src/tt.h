@@ -22,53 +22,73 @@
 #include "misc.h"
 #include "types.h"
 
-/// TTEntry struct is the 10 bytes transposition table entry, defined as below:
+/// TTEntry struct is the 8 bytes transposition table entry, defined as below:
 ///
-/// key        16 bit
 /// depth       8 bit
-/// generation  5 bit
-/// pv node     1 bit
-/// bound type  2 bit
-/// move       16 bit
+/// move       13 bit
+/// reserved    3 bit
 /// value      16 bit
 /// eval value 16 bit
+/// pv node     1 bit
+/// bound type  2 bit
+/// generation  5 bit
 
 struct TTEntryPacked {
 
-  uint16_t key16;
-  uint8_t  depth8;
-  uint8_t  genBound8;
-  uint16_t move16;
-  int16_t  value16;
-  int16_t  eval16;
+  uint16_t move13pv1bound2;
+  int16_t value16;
+  int16_t eval16;
 };
+
+struct TTCluster;
 
 struct TTEntry {
 
   void save(Key k, Value v, bool pv, Bound b, Depth d, Move m, Value ev);
 
-  Move  move()  const { return m_move; }
-  Value value() const { return m_value; }
-  Value eval()  const { return m_eval; }
+  Move  move()  const { return decodeTTMove(m_ttePacked->move13pv1bound2 & 0x1FFFU); }
+  Value value() const { return static_cast<Value>(m_ttePacked->value16); }
+  Value eval()  const { return static_cast<Value>(m_ttePacked->eval16); }
   Depth depth() const { return m_depth; }
-  bool is_pv()  const { return m_pv; }
-  Bound bound() const { return m_bound; }
+  bool  is_pv() const { return static_cast<bool>(m_ttePacked->move13pv1bound2 & 0x2000U); }
+  Bound bound() const { return static_cast<Bound>(m_ttePacked->move13pv1bound2 >> 14); }
 
 private:
   friend class TranspositionTable;
 
-  void load(TTEntryPacked *e, size_t clusterIndex, uint8_t slotIndex);
+  void load(TTCluster *cluster, unsigned i);
+  void reset(TTCluster *cluster, unsigned i);
+  static Move decodeTTMove(uint16_t encodedMove);
+  static uint16_t encodeTTMove(Move m);
 
-  Move m_move;
-  Value m_value;
-  Value m_eval;
-  bool m_pv;
-  Bound m_bound;
+  TTCluster *m_cluster;
+  TTEntryPacked *m_ttePacked;
   Depth m_depth;
-
-  size_t m_clusterIndex;
-  uint8_t m_slotIndex;
 };
+
+struct TTCluster {
+  static constexpr unsigned int ClusterSize = 3;
+  static constexpr unsigned int KeyBits = 16;
+  uint32_t keys24depths8[ClusterSize];   // 24 key bits per entry + 8 depth bits
+  uint16_t gens5;                        // packed bitfield
+
+  TTEntryPacked entry[ClusterSize];
+
+  uint8_t  getTteDepth(unsigned int slot) const { return keys24depths8[slot] >> 24; }
+  uint32_t getTteKey(unsigned int slot)   const { return keys24depths8[slot] & 0xFFFFFF; }
+
+  void storeTteKeyDepth(unsigned int slot, uint32_t key24, uint32_t depth8) {
+      keys24depths8[slot] = (depth8 << 24) + key24;
+  }
+
+  uint8_t getGen(unsigned int slot) const { return (gens5 >> (slot * 5)) & 0x1F; }
+  void storeGen(unsigned int slot, uint8_t newGen5) {
+    gens5 = (gens5 & ~(0x1FU << (slot * 5)))
+          + (newGen5 << (slot * 5));
+  }
+};
+
+static_assert(sizeof(TTCluster) == 32, "Unexpected Cluster size");
 
 
 /// A TranspositionTable is an array of Cluster, of size clusterCount. Each
@@ -78,17 +98,11 @@ private:
 /// prefetched when possible.
 
 class TranspositionTable {
-
-  static constexpr int ClusterSize = 3;
-
-  struct Cluster {
-    TTEntryPacked entry[ClusterSize];
-    char padding[2]; // Pad to 32 bytes
-  };
-
-  static_assert(sizeof(Cluster) == 32, "Unexpected Cluster size");
+  using Cluster = TTCluster;
+  static constexpr unsigned int ClusterSize = Cluster::ClusterSize;
 
 public:
+
  ~TranspositionTable() { freeMem(); }
   void new_search() { generation5 = (generation5 + 1) & 0x1FU; } // 5 bits, encoded with bound (2 bits) and pv (1 bit)
   bool probe(const Key key, TTEntry &entry) const;
