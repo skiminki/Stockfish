@@ -68,7 +68,7 @@ private:
 
 struct TTCluster {
   static constexpr unsigned int ClusterSize = 3;
-  static constexpr unsigned int KeyBits = 16;
+  static constexpr unsigned int KeyBits = 24;
   uint32_t keys24depths8[ClusterSize];   // 24 key bits per entry + 8 depth bits
   uint16_t gens5;                        // packed bitfield
 
