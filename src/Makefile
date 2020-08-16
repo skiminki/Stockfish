@@ -182,6 +182,7 @@ ifeq ($(findstring -avx2,$(ARCH)),-avx2)
 	ssse3 = yes
 	sse41 = yes
 	avx2 = yes
+	EXTRA_OPT = -march=haswell
 endif
 
 ifeq ($(findstring -bmi2,$(ARCH)),-bmi2)
@@ -192,6 +193,7 @@ ifeq ($(findstring -bmi2,$(ARCH)),-bmi2)
 	sse41 = yes
 	avx2 = yes
 	pext = yes
+	EXTRA_OPT = -march=haswell
 endif
 
 ifeq ($(findstring -avx512,$(ARCH)),-avx512)
@@ -639,6 +641,11 @@ ifeq ($(OS), Android)
 	LDFLAGS += -fPIE -pie
 endif
 
+### 3.10 Extra optimization flags
+CXXFLAGS += $(EXTRA_OPT)
+LDFLAGS += $(EXTRA_OPT)
+
+
 ### ==========================================================================
 ### Section 4. Public Targets
 ### ==========================================================================
@@ -692,6 +699,10 @@ help:
 	@echo "icc                     > Intel compiler"
 	@echo "ndk                     > Google NDK to cross-compile for Android"
 	@echo ""
+	@echo "Optimization flags for experienced users:"
+	@echo ""
+	@echo "EXTRA_OPT               > Additional optimization flags appended to the base flags."
+	@echo ""
 	@echo "Simple examples. If you don't know what to do, you likely want to run: "
 	@echo ""
 	@echo "make -j build ARCH=x86-64  (A portable, slow compile for 64-bit systems)"
@@ -700,8 +711,8 @@ help:
 	@echo "Advanced examples, for experienced users looking for performance: "
 	@echo ""
 	@echo "make    help  ARCH=x86-64-bmi2"
-	@echo "make -j profile-build ARCH=x86-64-bmi2 COMP=gcc COMPCXX=g++-9.0"
-	@echo "make -j build ARCH=x86-64-ssse3 COMP=clang"
+	@echo "make -j profile-build ARCH=x86-64-bmi2 COMP=gcc COMPCXX=g++-9.0 EXTRA_OPT=\"-march=native\""
+	@echo "make -j build ARCH=x86-64-ssse3 COMP=clang EXTRA_OPT=\"-march=native\""
 	@echo ""
 	@echo "-------------------------------"
 ifeq ($(SUPPORTED_ARCH)$(help_skip_sanity), true)
