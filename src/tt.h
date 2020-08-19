@@ -35,7 +35,7 @@
 
 struct TTEntry {
 
-  Move  move()  const { return (Move )move16; }
+  Move  move()  const { return (Move )(move16 - bool(move16)); }
   Value value() const { return (Value)value16; }
   Value eval()  const { return (Value)eval16; }
   Depth depth() const { return (Depth)depth8 + DEPTH_OFFSET; }
