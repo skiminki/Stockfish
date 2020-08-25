@@ -33,8 +33,9 @@ TranspositionTable TT; // Our global transposition table
 
 void TTEntry::save(Key k, Value v, bool pv, Bound b, Depth d, Move m, Value ev) {
 
-  // Preserve any existing move for the same position
-  if (m || (uint16_t)k != key16)
+  // Update move for new positions or if the position doesn't already have a
+  // move. For new positions, we need to reset with MOVE_NONE if necessary.
+  if (!move16 || (uint16_t)k != key16)
       move16 = (uint16_t)m;
 
   // Overwrite less valuable entries (cheapest checks first)
@@ -48,6 +49,12 @@ void TTEntry::save(Key k, Value v, bool pv, Bound b, Depth d, Move m, Value ev) 
       key16     = (uint16_t)k;
       depth8    = (uint8_t)(d - DEPTH_OFFSET);
       genBound8 = (uint8_t)(TT.generation8 | uint8_t(pv) << 2 | b);
+
+      // update move but only if we have one--we don't want to override the
+      // existing with MOVE_NONE
+      if (m)
+          move16 = (uint16_t)m;
+
       value16   = (int16_t)v;
       eval16    = (int16_t)ev;
   }
