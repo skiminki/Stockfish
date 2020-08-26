@@ -35,7 +35,7 @@ void TTEntry::save(Key k, Value v, bool pv, Bound b, Depth d, Move m, Value ev) 
 
   // Update move for new positions or if the position doesn't already have a
   // move. For new positions, we need to reset with MOVE_NONE if necessary.
-  if (!move16 || (uint16_t)k != key16)
+  if ((uint16_t)k != key16 || !move16)
       move16 = (uint16_t)m;
 
   // Overwrite less valuable entries (cheapest checks first)
