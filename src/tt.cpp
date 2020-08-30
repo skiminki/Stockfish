@@ -128,17 +128,31 @@ TTEntry* TranspositionTable::probe(const Key key, bool& found) const {
       }
 
   // Find an entry to be replaced according to the replacement strategy
-  TTEntry* replace = tte;
-  for (int i = 1; i < ClusterSize; ++i)
-      // Due to our packed storage format for generation and its cyclic
-      // nature we add 263 (256 is the modulus plus 7 to keep the unrelated
-      // lowest three bits from affecting the result) to calculate the entry
-      // age correctly even after generation8 overflows into the next cycle.
-      if (  replace->depth8 - ((263 + generation8 - replace->genBound8) & 0xF8)
-          >   tte[i].depth8 - ((263 + generation8 -   tte[i].genBound8) & 0xF8))
-          replace = &tte[i];
+  const int depth0 = tte[0].depth8 - ((263 + generation8 - tte[0].genBound8) & 0xF8);
+  const int depth1 = tte[1].depth8 - ((263 + generation8 - tte[1].genBound8) & 0xF8);
+  const int depth2 = tte[2].depth8 - ((263 + generation8 - tte[2].genBound8) & 0xF8);
 
-  return found = false, replace;
+  // find smallest aged depth
+  const unsigned comp10 = depth1 < depth0;
+  const unsigned comp21 = depth2 < depth1;
+  const unsigned comp20 = depth2 < depth0;
+
+  // The comparisons choose the replace index as follows:
+  //   replaceIndex[4*comp10 + 2*comp21 + 1*comp20] = { 0, x, 0, 2, 1, 1, x, 2 };
+  // This can be derived by going through all combinations. 'x' entries are
+  // impossible and they don't matter.
+  //
+  // The following formula gives:
+  //
+  //   0, 1, 0, 1, 1, 1, 1, 1  (comp10 | comp20)
+  // + 0, 0, 0, 1, 0, 0, 0, 1  (comp20 & comp21)
+  // ------------------------
+  //   0, 1, 0, 2, 1, 1, 1, 2
+  const uint8_t replaceIndex = (comp10 | comp20) + (comp20 & comp21);
+
+  assert(replaceIndex < 3);
+
+  return found = false, &tte[replaceIndex];
 }
 
 
