@@ -147,10 +147,21 @@ TTEntry* TranspositionTable::probe(const Key key, bool& found) const {
 
 int TranspositionTable::hashfull() const {
 
-  int cnt = 0;
-  for (int i = 0; i < 1000; ++i)
-      for (int j = 0; j < ClusterSize; ++j)
-          cnt += table[i].entry[j].depth8 && (table[i].entry[j].genBound8 & 0xF8) == generation8;
+  static_assert(ClusterSize == 3, "This function relies on a specific cluster size");
 
-  return cnt / ClusterSize;
+  auto tteUsed = [this](const TTEntry &tte) -> bool {
+      return tte.depth8 && (tte.genBound8 & 0xF8) == generation8;
+  };
+
+  int cnt = 0;
+
+  /// first 999 entries
+  for (size_t i = 0; i < 333; ++i)
+      for (size_t j = 0; j < ClusterSize; ++j)
+          cnt += tteUsed(table[i].entry[j]);
+
+  /// 1000th entry
+  cnt += tteUsed(table[333].entry[0]);
+
+  return cnt;
 }
