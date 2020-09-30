@@ -39,6 +39,8 @@ void std_aligned_free(void* ptr);
 void* aligned_large_pages_alloc(size_t size); // memory aligned by page size, min alignment: 4096 bytes
 void aligned_large_pages_free(void* mem); // nop if mem == nullptr
 
+void set_current_thread_affinity(unsigned int cpuNumber);
+
 void dbg_hit_on(bool b);
 void dbg_hit_on(bool c, bool b);
 void dbg_mean_of(int v);

@@ -61,6 +61,7 @@ void init(OptionsMap& o) {
 
   o["Debug Log File"]        << Option("", on_logger);
   o["Threads"]               << Option(1, 1, 512, on_threads);
+  o["Set Thread Affinity"]   << Option(false);
   o["Hash"]                  << Option(16, 1, MaxHashMB);
   o["Hash Clear Threads"]    << Option(0, 0, 512);
   o["Clear Hash"]            << Option(on_clear_hash);

@@ -36,6 +36,9 @@ ThreadPool Threads; // Global object
 
 Thread::Thread(size_t n) : idx(n), stdThread(&Thread::idle_loop, this) {
 
+  if (Options["Set Thread Affinity"])
+      set_current_thread_affinity(n);
+
   wait_for_search_finished();
 }
 

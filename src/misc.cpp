@@ -47,6 +47,7 @@ typedef bool(*fun3_t)(HANDLE, CONST GROUP_AFFINITY*, PGROUP_AFFINITY);
 #include <cstdlib>
 
 #if defined(__linux__) && !defined(__ANDROID__)
+#include <sched.h>
 #include <stdlib.h>
 #include <sys/mman.h>
 #endif
@@ -483,6 +484,21 @@ void aligned_large_pages_free(void *mem) {
 }
 
 #endif
+
+void set_current_thread_affinity(unsigned int cpu) {
+  cpu_set_t cpuset;
+
+  CPU_ZERO(&cpuset);
+  CPU_SET(cpu, &cpuset);
+
+  int ret = sched_setaffinity(0, sizeof cpuset, &cpuset);
+  if (ret)
+  {
+      int err = errno;
+      std::cerr << "Failed to set CPU affinity: err=" << err << " (" << strerror(err) << ")" << std::endl;
+      exit(1);
+  }
+}
 
 
 namespace WinProcGroup {
