@@ -78,8 +78,7 @@ void TranspositionTable::resizeIfChanged() {
       memMb = optMemMb;
       numThreads = optNumThreads;
 
-      // + 2 temporarily adds padding for verifying no bench change
-      clusterCount = optMemMb * uint64_t(1024 * 1024) / (sizeof(Cluster) + ClusterSize * sizeof(EntryKey) + 2);
+      clusterCount = optMemMb * uint64_t(1024 * 1024) / (sizeof(Cluster) + ClusterSize * sizeof(EntryKey));
       table = static_cast<Cluster*>(aligned_large_pages_alloc(
                                         clusterCount * (sizeof(Cluster) + ClusterSize * sizeof(EntryKey))));
       if (!table)

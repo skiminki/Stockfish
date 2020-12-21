@@ -65,13 +65,13 @@ private:
 
 class TranspositionTable {
 
-  static constexpr int ClusterSize = 3;
+  static constexpr int ClusterSize = 4;
 
   struct Cluster {
     TTEntry entry[ClusterSize];
   };
 
-  static_assert(sizeof(Cluster) == 24, "Unexpected Cluster size"); // temporary change
+  static_assert(sizeof(Cluster) == 32, "Unexpected Cluster size");
 
   // Constants used to refresh the hash table periodically
   static constexpr unsigned GENERATION_BITS  = 3;                                // nb of bits reserved for other things
