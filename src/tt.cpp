@@ -35,8 +35,13 @@ TranspositionTable TT; // Our global transposition table
 
 void TTEntry::save(Key k, Value v, bool pv, Bound b, Depth d, Move m, Value ev) {
 
+  const size_t entryIndex = this - &TT.table[0].entry[0];
+  TranspositionTable::EntryKey &key16 = TT.hashes[entryIndex];
+
+  assert(entryIndex < TT.clusterCount * TranspositionTable::ClusterSize);
+
   // Preserve any existing move for the same position
-  if (m || (uint16_t)k != key16)
+  if (m || (TranspositionTable::EntryKey)k != key16)
       move16 = (uint16_t)m;
 
   // Overwrite less valuable entries (cheapest checks first)
@@ -47,7 +52,7 @@ void TTEntry::save(Key k, Value v, bool pv, Bound b, Depth d, Move m, Value ev) 
       assert(d > DEPTH_OFFSET);
       assert(d < 256 + DEPTH_OFFSET);
 
-      key16     = (uint16_t)k;
+      key16     = (TranspositionTable::EntryKey)k;
       depth8    = (uint8_t)(d - DEPTH_OFFSET);
       genBound8 = (uint8_t)(TT.generation8 | uint8_t(pv) << 2 | b);
       value16   = (int16_t)v;
@@ -73,14 +78,17 @@ void TranspositionTable::resizeIfChanged() {
       memMb = optMemMb;
       numThreads = optNumThreads;
 
-      clusterCount = memMb * 1024 * 1024 / sizeof(Cluster);
-      table = static_cast<Cluster*>(aligned_large_pages_alloc(clusterCount * sizeof(Cluster)));
+      // + 2 temporarily adds padding for verifying no bench change
+      clusterCount = optMemMb * uint64_t(1024 * 1024) / (sizeof(Cluster) + ClusterSize * sizeof(EntryKey) + 2);
+      table = static_cast<Cluster*>(aligned_large_pages_alloc(
+                                        clusterCount * (sizeof(Cluster) + ClusterSize * sizeof(EntryKey))));
       if (!table)
       {
           std::cerr << "Failed to allocate " << memMb
                     << "MB for transposition table." << std::endl;
           exit(EXIT_FAILURE);
       }
+      hashes = reinterpret_cast<EntryKey *>(uintptr_t(table) + clusterCount * sizeof(Cluster));
 
       markDirty(); // resized hash always needs clearing
       clear();
@@ -100,20 +108,21 @@ void TranspositionTable::clear() {
 
   const unsigned int optNumThreads = Options["Threads"];
   const unsigned int numClearThreads = Options["Hash Clear Threads"] ? static_cast<unsigned int>(Options["Hash Clear Threads"]) : optNumThreads;
-  const uint64_t hashSize = clusterCount * sizeof(Cluster); // to avoid overflow in (hashSize * idx) on 32-bit archs
 
   for (size_t idx = 0; idx < numClearThreads; ++idx)
   {
-      const uint64_t startOffset = (hashSize * idx / numClearThreads);
-      const uint64_t endOffset =   (hashSize * (idx + 1) / numClearThreads);
+      const uint64_t startCluster = (uint64_t(clusterCount) * idx / numClearThreads);
+      const uint64_t endCluster =   (uint64_t(clusterCount) * (idx + 1) / numClearThreads);
+      const uint64_t len = endCluster - startCluster;
 
-      threads.emplace_back([this, idx, optNumThreads, numClearThreads, startOffset, endOffset]() {
+      threads.emplace_back([this, idx, optNumThreads, numClearThreads, startCluster, len]() {
 
           // Thread binding gives faster search on systems with a first-touch policy
           if (optNumThreads > 8)
               WinProcGroup::bindThisThread(idx *  optNumThreads / numClearThreads);
 
-          std::memset(reinterpret_cast<uint8_t *>(table) + startOffset, 0, endOffset - startOffset);
+          std::memset(&table[startCluster], 0, len * sizeof(Cluster));
+          std::memset(&hashes[startCluster * ClusterSize], 0, len * ClusterSize * sizeof(EntryKey));
       });
   }
 
@@ -133,11 +142,14 @@ void TranspositionTable::clear() {
 
 TTEntry* TranspositionTable::probe(const Key key, bool& found) const {
 
-  TTEntry* const tte = first_entry(key);
-  const uint16_t key16 = (uint16_t)key;  // Use the low 16 bits as key inside the cluster
+  const size_t clusterIndex = getClusterIndex(key);
+  TTEntry* const tte = &TT.table[clusterIndex].entry[0];
+  TranspositionTable::EntryKey *const clusterKeys = &TT.hashes[ClusterSize * clusterIndex];
+
+  const EntryKey key16 = (EntryKey)key;  // Use the low 16 bits as key inside the cluster
 
   for (int i = 0; i < ClusterSize; ++i)
-      if (tte[i].key16 == key16 || !tte[i].depth8)
+      if (clusterKeys[i] == key16 || !tte[i].depth8)
       {
           tte[i].genBound8 = uint8_t(generation8 | (tte[i].genBound8 & (GENERATION_DELTA - 1))); // Refresh
 
