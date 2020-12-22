@@ -97,7 +97,7 @@ public:
 
 private:
   friend struct TTEntry;
-  using EntryKey = uint16_t;
+  using EntryKey = uint32_t;
 
   size_t clusterCount;
   Cluster* table;
